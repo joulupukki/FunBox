@@ -31,7 +31,7 @@ OLD Hothouse-based demo video (6 January 2025):
 | KNOB 5 | Delay Feedback |  |
 | KNOB 6 | Delay Dry/Wet Amount |  |
 | SWITCH 1 | Reverb knob funcion | **LEFT** - 100% Dry, 0-100% Wet<br/>**MIDDLE** - Dry/Wet Mix<br/>**RIGHT** - 0% Dry, 0-100% Wet |
-| SWITCH 2 | Tremolo Waveform | **LEFT** - Sine<br/>*Square wave currently clicks and this is a [known bug](https://github.com/joulupukki/hothouse-effects/issues/9).*<br/>**MIDDLE** - Triangle<br/>**RIGHT** - Square |
+| SWITCH 2 | Tremolo Waveform | **LEFT** - Sine<br/>**MIDDLE** - Triangle<br/>**RIGHT** - Square<br/>*Square wave currently clicks and this is a [known bug](https://github.com/joulupukki/hothouse-effects/issues/9).* |
 | SWITCH 3 | Trem & Delay Makeup Gain | **LEFT** - None<br/>**MIDDLE** - Normal<br/>**RIGHT** - Plus |
 | FOOTSWITCH 1 | Reverb On/Off | Normal press toggles reverb on/off.<br/>Double press toggles reverb edit mode (see below).<br/>Long press for DFU mode. |
 | FOOTSWITCH 2 | Delay/Tremolo On/Off | Normal press toggles delay.<br/>Double press toggles tremolo.<br/><br/>**LED:**<br/>- 100% when only relay is active<br/>- 40% pulsing when only tremolo is active<br/>- 100% pulsing when both are active |
