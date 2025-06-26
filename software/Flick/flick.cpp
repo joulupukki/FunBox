@@ -348,6 +348,12 @@ void handle_normal_press(Funbox::Switches footswitch) {
   } else {
     if (footswitch == Funbox::FOOTSWITCH_1) {
       bypass_verb = !bypass_verb;
+
+      if (bypass_verb) {
+        // Clear the reverb tails when the reverb is bypassed so if you
+        // turn it back on, it starts fresh and doesn't sound weird.
+        verb.clear();
+      }
     } else {
       bypass_delay = !bypass_delay;
     }
@@ -560,20 +566,24 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
       s_L = s_L * trem_val * trem_make_up_gain;
       s_R = s_R * trem_val * trem_make_up_gain;
     }
+    // Keep sending input to the reverb even if bypassed so that when it's
+    // enabled again it will already have the current input signal already
+    // being processed.
+
+    // Dattorro seems to want to have values between -10 and 10 so times by 10
+    // leftInput = hardLimit100_(s_L) * 10.0f;
+    // rightInput = hardLimit100_(s_R) * 10.0f;
+
+    // For now, send in double the amount of input to the reverb which seems
+    // to work a little better. Sending in 10x was making the reverb be WAY
+    // too loud.
+    leftInput = hardLimit100_(s_L) * 2.0f;
+    rightInput = hardLimit100_(s_R) * 2.0f;
+
+    verb.process(leftInput * minus18dBGain * minus20dBGain * (1.0f + inputAmplification * 7.0f) * clearPopCancelValue,
+                  rightInput * minus18dBGain * minus20dBGain * (1.0f + inputAmplification * 7.0f) * clearPopCancelValue);
+
     if (!bypass_verb) {
-      // Dattorro seems to want to have values between -10 and 10 so times by 10
-      // leftInput = hardLimit100_(s_L) * 10.0f;
-      // rightInput = hardLimit100_(s_R) * 10.0f;
-
-      // For now, send in double the amount of input to the reverb which seems
-      // to work a little better. Sending in 10x was making the reverb be WAY
-      // too loud.
-      leftInput = hardLimit100_(s_L) * 2.0f;
-      rightInput = hardLimit100_(s_R) * 2.0f;
-
-      verb.process(leftInput * minus18dBGain * minus20dBGain * (1.0f + inputAmplification * 7.0f) * clearPopCancelValue,
-                    rightInput * minus18dBGain * minus20dBGain * (1.0f + inputAmplification * 7.0f) * clearPopCancelValue);
-
       // leftOutput = ((leftInput * plateDry * 0.1) + (verb.getLeftOutput() * plateWet * clearPopCancelValue));
       // rightOutput = ((rightInput * plateDry * 0.1) + (verb.getRightOutput() * plateWet * clearPopCancelValue));
       leftOutput = ((leftInput * plateDry * 0.5) + (verb.getLeftOutput() * plateWet * clearPopCancelValue));
