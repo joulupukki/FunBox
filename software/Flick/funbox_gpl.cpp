@@ -244,21 +244,17 @@ void Funbox::ProcessFootswitchPresses(Switches footswitch) {
   if (footswitchCallbacks == NULL) return;
 
   int idx = (footswitch == Funbox::FOOTSWITCH_1) ? 0 : 1;
-  bool is_pressed = switches[footswitch].RisingEdge();
+
+  bool is_pressed = switches[footswitch].Pressed();
+  bool rising_edge = switches[footswitch].RisingEdge();
+  bool falling_edge = switches[footswitch].FallingEdge();
+
   uint32_t now = System::GetNow();
 
-  // Handle pending single press if enough time has passed without second press
-  if (footswitch_pending_single_press[idx] && 
-      (now - footswitch_pending_press_time[idx] >= DOUBLE_PRESS_THRESHOLD_MS)) {
-    if (footswitchCallbacks->HandleNormalPress != NULL) {
-      footswitchCallbacks->HandleNormalPress(footswitch);
-    }
-    footswitch_pending_single_press[idx] = false;
-    footswitch_press_count[idx] = 0;
-  }
-
-  if (is_pressed && !footswitch_last_state[idx]) {
+  // Just pressed
+  if (rising_edge) {
     footswitch_start_time[idx] = now;
+    footswitch_long_press_triggered[idx] = false;
 
     if ((now - footswitch_last_press_time[idx]) <= DOUBLE_PRESS_THRESHOLD_MS) {
       footswitch_press_count[idx]++;
@@ -267,21 +263,23 @@ void Funbox::ProcessFootswitchPresses(Switches footswitch) {
     }
 
     footswitch_last_press_time[idx] = now;
-    footswitch_long_press_triggered[idx] = false;
   }
 
-  uint32_t press_duration = now - footswitch_start_time[idx];
-
-  if (is_pressed && press_duration >= HOLD_THRESHOLD_MS && !footswitch_long_press_triggered[idx]) {
+  // Still pressed: check for long press
+  if (is_pressed &&
+      !footswitch_long_press_triggered[idx] &&
+      (now - footswitch_start_time[idx] >= HOLD_THRESHOLD_MS)) {
     if (footswitchCallbacks->HandleLongPress != NULL) {
       footswitchCallbacks->HandleLongPress(footswitch);
     }
     footswitch_long_press_triggered[idx] = true;
+
     footswitch_press_count[idx] = 0;
     footswitch_pending_single_press[idx] = false;
   }
 
-  if (!is_pressed && footswitch_last_state[idx]) {
+  // Just released
+  if (falling_edge) {
     if (!footswitch_long_press_triggered[idx]) {
       if (footswitch_press_count[idx] >= 2) {
         if (footswitchCallbacks->HandleDoublePress != NULL) {
@@ -289,12 +287,22 @@ void Funbox::ProcessFootswitchPresses(Switches footswitch) {
         }
         footswitch_press_count[idx] = 0;
         footswitch_pending_single_press[idx] = false;
-      } else if (press_duration < HOLD_THRESHOLD_MS) {
-        // Defer normal press in case this is a double
+      } else {
+        // Defer handling of single press in case it becomes a double
         footswitch_pending_single_press[idx] = true;
         footswitch_pending_press_time[idx] = now;
       }
     }
+  }
+
+  // If we were waiting to see if it was a double press, and enough time has passed — handle normal press
+  if (footswitch_pending_single_press[idx] &&
+      (now - footswitch_pending_press_time[idx] >= DOUBLE_PRESS_THRESHOLD_MS)) {
+    if (footswitchCallbacks->HandleNormalPress != NULL) {
+      footswitchCallbacks->HandleNormalPress(footswitch);
+    }
+    footswitch_pending_single_press[idx] = false;
+    footswitch_press_count[idx] = 0;
   }
 
   footswitch_last_state[idx] = is_pressed;

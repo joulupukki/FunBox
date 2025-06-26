@@ -36,15 +36,22 @@ using daisysp::fonepole;
 
 /// Increment this when changing the settings struct so the software will know
 /// to reset to defaults if this ever changes.
-#define SETTINGS_VERSION 1
+#define SETTINGS_VERSION 2
 
 Funbox hw;
 
 #define MAX_DELAY static_cast<size_t>(48000 * 2.0f) // 4 second max delay
 
-enum ReverbMode {
-  REVERB_MODE_NORMAL, // Normal reverb mode
-  REVERB_MODE_EDIT,   // Edit mode activated by float-press of the left foot switch
+enum PedalMode {
+  PEDAL_MODE_NORMAL,
+  PEDAL_MODE_EDIT_REVERB,     // Edit mode activated by double-press of the left foot switch
+  PEDAL_MODE_EDIT_MONO_STEREO // Edit mode activated by long-press of the right foot switch
+};
+
+enum MonoStereoMode {                       // Controlled by Toggle Switch 3
+  MS_MODE_MIMO, // Mono In, Mono Out        // TOGGLESWITCH_LEFT
+  MS_MODE_MISO, // Mono In, Stereo Out      // TOGGLESWITCH_MIDDLE
+  MS_MODE_SISO, // Stereo In, Stereo Out    // TOGGLESWITCH_RIGHT
 };
 
 // Persistent Settings
@@ -58,6 +65,7 @@ struct Settings {
   float tankModDepth;
   float tankModShape;
   float preDelay;
+  int monoStereoMode;
 
 	//Overloading the != operator
 	//This is necessary as this operator is used in the PersistentStorage source code
@@ -71,7 +79,8 @@ struct Settings {
       a.tankModSpeed == tankModSpeed &&
       a.tankModDepth == tankModDepth &&
       a.tankModShape == tankModShape &&
-      a.preDelay == preDelay
+      a.preDelay == preDelay &&
+      a.monoStereoMode == monoStereoMode
     );
   }
 };
@@ -86,7 +95,8 @@ DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS delMemL;
 DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS delMemR;
 
 Dattorro verb(48000, 16, 4.0);
-ReverbMode verb_mode = REVERB_MODE_NORMAL;
+PedalMode pedal_mode = PEDAL_MODE_NORMAL;
+MonoStereoMode mono_stereo_mode = MS_MODE_MIMO;
 
 Parameter p_verb_amt;
 Parameter p_trem_speed, p_trem_depth;
@@ -245,6 +255,7 @@ void load_settings() {
   plateTankModDepth = LocalSettings.tankModDepth;
   plateTankModShape = LocalSettings.tankModShape;
   platePreDelay = LocalSettings.preDelay;
+  mono_stereo_mode = static_cast<MonoStereoMode>(LocalSettings.monoStereoMode);
 
   verb.setPreDelay(platePreDelay);
   verb.setInputFilterHighCutoffPitch(plateInputDampHigh);
@@ -273,6 +284,14 @@ void save_settings() {
 	trigger_settings_save = true;
 }
 
+void save_mono_stereo_settings() {
+  Settings &LocalSettings = SavedSettings.GetSettings();
+
+  LocalSettings.monoStereoMode = mono_stereo_mode;
+
+  trigger_settings_save = true;
+}
+
 /// @brief Restore the reverb settings from the saved settings.
 void restore_reverb_settings() {
 	Settings &LocalSettings = SavedSettings.GetSettings();
@@ -297,8 +316,15 @@ void restore_reverb_settings() {
   verb.setPreDelay(platePreDelay);    
 }
 
+/// @brief Restore the mono-stereo settings from the saved settings.
+void restore_mono_stereo_settings() {
+  Settings &LocalSettings = SavedSettings.GetSettings();
+
+  mono_stereo_mode = static_cast<MonoStereoMode>(LocalSettings.monoStereoMode);
+}
+
 void handle_normal_press(Funbox::Switches footswitch) {
-  if (verb_mode == REVERB_MODE_EDIT) {
+  if (pedal_mode == PEDAL_MODE_EDIT_REVERB) {
     // Only save the settings if the RIGHT footswitch is pressed in edit mode.
     // The LEFT footswitch is used to exit edit mode without saving.
     if (footswitch == Funbox::FOOTSWITCH_2) {
@@ -307,7 +333,18 @@ void handle_normal_press(Funbox::Switches footswitch) {
     } else {
       restore_reverb_settings();
     }
-    verb_mode = REVERB_MODE_NORMAL;
+    pedal_mode = PEDAL_MODE_NORMAL;
+  } else if (pedal_mode == PEDAL_MODE_EDIT_MONO_STEREO) {
+    // Only save the settings if the RIGHT footswitch is pressed in mono-stereo
+    // edit mode. The CANCEL footswitch is used to exit mono-stereo edit mode
+    // without saving.
+    if (footswitch == Funbox::FOOTSWITCH_2) {
+      // Save the mono-stereo settings
+      save_mono_stereo_settings();
+    } else {
+      restore_mono_stereo_settings();
+    }
+    pedal_mode = PEDAL_MODE_NORMAL;
   } else {
     if (footswitch == Funbox::FOOTSWITCH_1) {
       bypass_verb = !bypass_verb;
@@ -318,15 +355,15 @@ void handle_normal_press(Funbox::Switches footswitch) {
 }
 
 void handle_double_press(Funbox::Switches footswitch) {
-  // Ignore double presses in reverb edit mode
-  if (verb_mode == REVERB_MODE_EDIT) {
+  // Ignore double presses in edit modes
+  if (pedal_mode == PEDAL_MODE_EDIT_REVERB || pedal_mode == PEDAL_MODE_EDIT_MONO_STEREO) {
     return;
   }
 
   if (footswitch == Funbox::FOOTSWITCH_1) {
     // Go into reverb edit mode
     bypass_verb = false; // Make sure that reverb is ON
-    verb_mode = REVERB_MODE_EDIT;
+    pedal_mode = PEDAL_MODE_EDIT_REVERB;
   } else if (footswitch == Funbox::FOOTSWITCH_2) {
     // Toggle the trem bypass
     bypass_trem = !bypass_trem;
@@ -334,7 +371,10 @@ void handle_double_press(Funbox::Switches footswitch) {
 }
 
 void handle_long_press(Funbox::Switches footswitch) {
-  // Intentionally blank
+  if (footswitch == Funbox::FOOTSWITCH_2) {
+    // If the right footswitch is long-pressed, enter mono-stereo config.
+    pedal_mode = PEDAL_MODE_EDIT_MONO_STEREO;
+  }
 }
 
 inline float hardLimit100_(const float &x) {
@@ -354,7 +394,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
   static float trem_val;
   hw.ProcessAllControls();
 
-  if (verb_mode == REVERB_MODE_EDIT) {
+  if (pedal_mode == PEDAL_MODE_EDIT_REVERB) {
     // Edit mode
 
     // Blink the left & right LEDs
@@ -367,6 +407,17 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
         led_left.Set(led_state ? 1.0f : 0.0f);
         led_right.Set(led_state ? 1.0f : 0.0f);
       }
+    }
+  } else if (pedal_mode == PEDAL_MODE_EDIT_MONO_STEREO) {
+    // Mono-Stereo edit mode
+    // Blink the left & right LEDs alternately to indicate mono-stereo edit mode
+    static uint32_t mono_stereo_edit_count = 0;
+    static bool led_state = true;
+    if (++mono_stereo_edit_count >= hw.AudioCallbackRate() / 2) {
+      mono_stereo_edit_count = 0;
+      led_state = !led_state;
+      led_left.Set(led_state ? 1.0f : 0.0f);
+      led_right.Set(led_state ? 0.0f : 1.0f);
     }
   } else {
     // Normal mode
@@ -392,7 +443,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
 
   TremDelMakeUpGain makeup_gain = kMakeupGainMap[hw.GetToggleswitchPosition(Funbox::TOGGLESWITCH_3)];
 
-  if (verb_mode == REVERB_MODE_NORMAL) {
+  if (pedal_mode == PEDAL_MODE_NORMAL) {
     osc.SetFreq(p_trem_speed.Process());
     static float depth = 0;
     depth = daisysp::fclamp(p_trem_depth.Process(), 0.f, 1.f);
@@ -421,7 +472,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
         plateDry = 0.0f;
         break;
     }
-  } else if (verb_mode == REVERB_MODE_EDIT) {
+  } else if (pedal_mode == PEDAL_MODE_EDIT_REVERB) {
     // Edit mode
     plateDry = 1.0; // Always use dry 100% in edit mode
     platePreDelay = p_knob_2.Process() * 0.25;
@@ -455,17 +506,33 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
     verb.setTankModDepth(plateTankModDepth * 15);
     verb.setTankModShape(plateTankModShape);
     verb.setPreDelay(platePreDelay);    
+  } else if (pedal_mode == PEDAL_MODE_EDIT_MONO_STEREO) {
+    // Mono-Stereo edit mode
+    // Read in the mono-stereo mode from toggle switch 3
+    switch (hw.GetToggleswitchPosition(Funbox::TOGGLESWITCH_3)) {
+      case Funbox::TOGGLESWITCH_MIDDLE:
+        mono_stereo_mode = MS_MODE_MISO; // Mono In, Stereo Out
+        break;
+      case Funbox::TOGGLESWITCH_LEFT: // Something odd is happening and it's opposite of what I expect
+        mono_stereo_mode = MS_MODE_SISO; // Stereo In, Stereo Out
+        break;
+      default:
+        mono_stereo_mode = MS_MODE_MIMO; // Mono In, Mono Out
+    }
   }
 
-  // TODO: Eventually support stereo input and other combinations.
-  // For now, this is configured for mono input and stereo output.
   for (size_t i = 0; i < size; ++i) {
     float dry_L = in[0][i];
-    // float dry_R = in[1][i]; // Ignore stereo input for now
+    float dry_R = in[1][i];
     float s_L, s_R;
     s_L = dry_L;
-    // s_R = dry_R;
-    s_R = dry_L; // For mono input, use the same signal for both channels
+    if (mono_stereo_mode == MS_MODE_MIMO || mono_stereo_mode == MS_MODE_MISO) {
+      // Use the mono signel (L) for both channels in MIMO and MISO modes
+      s_R = dry_L;
+    } else {
+      // Use both L & R inputs in SISO mode
+      s_R = dry_R;
+    }
 
     if (!bypass_delay) {
       float mixL = 0;
@@ -495,21 +562,35 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
     }
     if (!bypass_verb) {
       // Dattorro seems to want to have values between -10 and 10 so times by 10
-      leftInput = hardLimit100_(s_L) * 10.0f;
-      rightInput = hardLimit100_(s_R) * 10.0f;
+      // leftInput = hardLimit100_(s_L) * 10.0f;
+      // rightInput = hardLimit100_(s_R) * 10.0f;
+
+      // For now, send in double the amount of input to the reverb which seems
+      // to work a little better. Sending in 10x was making the reverb be WAY
+      // too loud.
+      leftInput = hardLimit100_(s_L) * 2.0f;
+      rightInput = hardLimit100_(s_R) * 2.0f;
 
       verb.process(leftInput * minus18dBGain * minus20dBGain * (1.0f + inputAmplification * 7.0f) * clearPopCancelValue,
                     rightInput * minus18dBGain * minus20dBGain * (1.0f + inputAmplification * 7.0f) * clearPopCancelValue);
 
-      leftOutput = ((leftInput * plateDry * 0.1) + (verb.getLeftOutput() * plateWet * clearPopCancelValue));
-      rightOutput = ((rightInput * plateDry * 0.1) + (verb.getRightOutput() * plateWet * clearPopCancelValue));
+      // leftOutput = ((leftInput * plateDry * 0.1) + (verb.getLeftOutput() * plateWet * clearPopCancelValue));
+      // rightOutput = ((rightInput * plateDry * 0.1) + (verb.getRightOutput() * plateWet * clearPopCancelValue));
+      leftOutput = ((leftInput * plateDry * 0.5) + (verb.getLeftOutput() * plateWet * clearPopCancelValue));
+      rightOutput = ((rightInput * plateDry * 0.5) + (verb.getRightOutput() * plateWet * clearPopCancelValue));
 
       s_L = leftOutput;
       s_R = rightOutput;
     }
 
-    out[0][i] = s_L;
-    out[1][i] = s_R;
+    if (mono_stereo_mode == MS_MODE_MIMO) {
+      out[0][i] = (s_L * 0.5) + (s_R * 0.5); // Sum the processed left and right channels
+      out[1][i] = 0.0f; // Mute the unused channel
+    } else {
+      // Send stereo output in MISO and SISO
+      out[0][i] = s_L;
+      out[1][i] = s_R;
+    }
   }
 }
 
@@ -644,6 +725,9 @@ int main() {
 
         hw.StartAudio(AudioCallback);
         factory_reset_stage = 0;
+        bypass_delay = true;
+        bypass_trem = true;
+        pedal_mode = PEDAL_MODE_NORMAL;
         is_factory_reset_mode = false;
       }
     }

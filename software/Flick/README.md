@@ -34,7 +34,7 @@ OLD Hothouse-based demo video (6 January 2025):
 | SWITCH 2 | Tremolo Waveform | **LEFT** - Sine<br/>**MIDDLE** - Triangle<br/>**RIGHT** - Square |
 | SWITCH 3 | Trem & Delay Makeup Gain | **LEFT** - None<br/>**MIDDLE** - Normal<br/>**RIGHT** - Plus |
 | FOOTSWITCH 1 | Reverb On/Off | Normal press toggles reverb on/off.<br/>Double press toggles reverb edit mode (see below).<br/>Long press for DFU mode. |
-| FOOTSWITCH 2 | Delay/Tremolo On/Off | Normal press toggles delay.<br/>Double press toggles tremolo.<br/><br/>**LED:**<br/>- 100% when only relay is active<br/>- 40% pulsing when only tremolo is active<br/>- 100% pulsing when both are active |
+| FOOTSWITCH 2 | Delay/Tremolo On/Off | Normal press toggles delay.<br/>Double press toggles tremolo.<br/><br/>**LED:**<br/>- 100% when only relay is active<br/>- 40% pulsing when only tremolo is active<br/>- 100% pulsing when both are active<br/>Long press for Mono-Stereo Edit mode (see below). |
 
 ### Controls (Reverb Edit Mode)
 *Both LEDs flash when in edit mode.*
@@ -52,6 +52,15 @@ OLD Hothouse-based demo video (6 January 2025):
 | SWITCH 3 | Tank Mod Shape | **LEFT** - Low<br/>**MIDDLE** - Medium<br/>**RIGHT** - High |
 | FOOTSWITCH 1 | **CANCEL** & Exit | Discards parameter changes and exits Reverb Edit Mode.<br/>Long press for DFU mode. |
 | FOOTSWITCH 2 | **SAVE** & Exit | Saves all parameters and exits Reverb Edit Mode. |
+
+### Controls (Mono-Stereo Edit Mode)
+*Both LEDs flash alternatively when in Mono-Stereo Edit mode.*
+
+| CONTROL | DESCRIPTION | NOTES |
+|-|-|-|
+| SWITCH 3 | Mono-Stereo Mode | **LEFT** - Mono in, Mono Out<br/>**MIDDLE** - Mono in, Stereo Out<br/>**RIGHT** - Stereo In, Stereo Out |
+| FOOTSWITCH 1 | **CANCEL** & Exit | Discards parameter changes and exits Mono-Stereo Edit Mode.<br/>Long press for DFU mode. |
+| FOOTSWITCH 2 | **SAVE** & Exit | Saves all parameters and exits Mono-Stereo Edit Mode. |
 
 ### Factory Reset (Restore default reverb parameters)
 
