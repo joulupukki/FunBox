@@ -242,50 +242,58 @@ void Funbox::RegisterFootswitchCallbacks(FootswitchCallbacks *callbacks) {
 // Watches for normal, double, and long presses of the footswitches.
 void Funbox::ProcessFootswitchPresses(Switches footswitch) {
   if (footswitchCallbacks == NULL) {
-    return; // Nothing to do if callbacks have not been registered
+    return;
   }
-  bool is_pressed = switches[footswitch].RisingEdge();
-  int footswitch_index = footswitch == Funbox::FOOTSWITCH_1 ? 0 : 1;
 
+  int index = footswitch == Funbox::FOOTSWITCH_1 ? 0 : 1;
+
+  bool current_state = switches[footswitch].Pressed(); // true = held down
+  bool last_state = footswitch_last_state[index];
   uint32_t now = System::GetNow();
 
-  if (is_pressed == true && footswitch_last_state[footswitch_index] == false) {
-    // Footswitch is pressed
-    footswitch_start_time[footswitch_index] = now;
+  // Detect rising edge (press)
+  if (!last_state && current_state) {
+    footswitch_start_time[index] = now;
 
-    if ((now - footswitch_last_press_time[footswitch_index]) <= DOUBLE_PRESS_THRESHOLD_MS) {
-      footswitch_press_count[footswitch_index]++;
+    if ((now - footswitch_last_press_time[index]) <= DOUBLE_PRESS_THRESHOLD_MS) {
+      footswitch_press_count[index]++;
     } else {
-      footswitch_press_count[footswitch_index] = 1;
+      footswitch_press_count[index] = 1;
     }
 
-    footswitch_last_press_time[footswitch_index] = now;
-    footswitch_long_press_triggered[footswitch_index] = false; // Reset long press trigger when pressed
+    footswitch_last_press_time[index] = now;
+    footswitch_long_press_triggered[index] = false;
   }
 
-  uint32_t press_duration = now - footswitch_start_time[footswitch_index];
-
-  if (is_pressed == true && press_duration >= HOLD_THRESHOLD_MS && !footswitch_long_press_triggered[footswitch_index]) {
-    // Footswitch is being held down
-    if (footswitchCallbacks->HandleLongPress != NULL) {
-      footswitchCallbacks->HandleLongPress(footswitch);
+  // Detect long press while holding
+  if (current_state && !footswitch_long_press_triggered[index]) {
+    uint32_t duration = now - footswitch_start_time[index];
+    if (duration >= HOLD_THRESHOLD_MS) {
+      if (footswitchCallbacks->HandleLongPress != NULL) {
+        footswitchCallbacks->HandleLongPress(footswitch);
+      }
+      footswitch_long_press_triggered[index] = true;
+      footswitch_press_count[index] = 0; // Cancel double-press logic
     }
-    footswitch_long_press_triggered[footswitch_index] = true; // Ensure long press is only triggered once
   }
 
-  if (is_pressed == false && footswitch_last_state[footswitch_index] == true) {
-    // Button released
-    if (!footswitch_long_press_triggered[footswitch_index]) {
-      if (footswitch_press_count[footswitch_index] >= 2) {
+  // Detect falling edge (release)
+  if (last_state && !current_state) {
+    uint32_t duration = now - footswitch_start_time[index];
+    if (!footswitch_long_press_triggered[index]) {
+      if (footswitch_press_count[index] >= 2) {
         if (footswitchCallbacks->HandleDoublePress != NULL) {
           footswitchCallbacks->HandleDoublePress(footswitch);
         }
-        footswitch_press_count[footswitch_index] = 0;
-      } else if (press_duration < HOLD_THRESHOLD_MS && footswitchCallbacks->HandleNormalPress != NULL) {
-        footswitchCallbacks->HandleNormalPress(footswitch);
+        footswitch_press_count[index] = 0;
+      } else if (duration < HOLD_THRESHOLD_MS) {
+        if (footswitchCallbacks->HandleNormalPress != NULL) {
+          footswitchCallbacks->HandleNormalPress(footswitch);
+        }
       }
     }
   }
 
-  footswitch_last_state[footswitch_index] = is_pressed;
+  // Save state for next tick
+  footswitch_last_state[index] = current_state;
 }
