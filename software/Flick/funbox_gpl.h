@@ -214,10 +214,8 @@ class Funbox {
   bool footswitch_last_state[2] = {false, false};
   uint8_t footswitch_press_count[2] = {0, 0};
   bool footswitch_long_press_triggered[2] = {false, false};
-  bool footswitch_pending_single_press[2] = {false, false};
-  uint32_t footswitch_pending_press_time[2] = {0, 0};
   static const uint32_t HOLD_THRESHOLD_MS = 2000;  // 2 second hold time
-  static const uint32_t DOUBLE_PRESS_THRESHOLD_MS = 240; // 240 ms
+  static const uint32_t DOUBLE_PRESS_THRESHOLD_MS = 600;
 
   inline uint16_t* adc_ptr(const uint8_t chn) { return seed.adc.GetPtr(chn); }
 

@@ -366,6 +366,10 @@ void handle_double_press(Funbox::Switches footswitch) {
     return;
   }
 
+  // When double press is detected, a normal press was already detected and
+  // processed, so reverse that right off the bat.
+  handle_normal_press(footswitch);
+
   if (footswitch == Funbox::FOOTSWITCH_1) {
     // Go into reverb edit mode
     bypass_verb = false; // Make sure that reverb is ON
