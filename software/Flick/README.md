@@ -16,7 +16,7 @@ This is a reverb, tremolo, and delay pedal. The original goal of this pedal was 
 
 Feature demo video (28 June 2025):
 
-[![Demo Video](https://img.youtube.com/vi/7bptk5pUuak/0.jpg)](https://www.youtube.com/watch?v=7bptk5pUuak)
+[![Demo Video](https://img.youtube.com/vi/pWW68mqj2iQ/0.jpg)](https://www.youtube.com/watch?v=pWW68mqj2iQ)
 
 ### Controls (Normal Mode)
 
