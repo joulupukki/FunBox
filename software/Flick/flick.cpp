@@ -36,11 +36,24 @@ using daisysp::fonepole;
 
 /// Increment this when changing the settings struct so the software will know
 /// to reset to defaults if this ever changes.
-#define SETTINGS_VERSION 2
+#define SETTINGS_VERSION 4
 
 Funbox hw;
 
-#define MAX_DELAY static_cast<size_t>(48000 * 2.0f) // 4 second max delay
+// Audio config constants
+constexpr float SAMPLE_RATE = 48000.0f;
+constexpr size_t MAX_DELAY = static_cast<size_t>(SAMPLE_RATE * 2.0f);
+
+// Tremolo constants
+constexpr float TREMOLO_SPEED_MIN = 0.2f;   // Minimum tremolo speed in Hz
+constexpr float TREMOLO_SPEED_MAX = 16.0f;  // Maximum tremolo speed in Hz
+constexpr float TREMOLO_DEPTH_SCALE = 1.0f; // Scale factor for tremolo depth
+constexpr float TREMOLO_LED_BRIGHTNESS = 0.4f; // LED brightness when only tremolo is active
+
+// Delay constants
+constexpr float DELAY_TIME_MIN_SECONDS = 0.05f;
+constexpr float DELAY_WET_MIX_ATTENUATION = 0.333f; // Attenuation for wet delay signal
+constexpr float DELAY_DRY_WET_PERCENT_MAX = 100.0f; // Max value for dry/wet percentage
 
 enum PedalMode {
   PEDAL_MODE_NORMAL,
@@ -66,6 +79,9 @@ struct Settings {
   float tankModShape;
   float preDelay;
   int monoStereoMode;
+  bool bypassReverb;
+  bool bypassTremolo;
+  bool bypassDelay;
 
 	//Overloading the != operator
 	//This is necessary as this operator is used in the PersistentStorage source code
@@ -80,7 +96,10 @@ struct Settings {
       a.tankModDepth == tankModDepth &&
       a.tankModShape == tankModShape &&
       a.preDelay == preDelay &&
-      a.monoStereoMode == monoStereoMode
+      a.monoStereoMode == monoStereoMode &&
+      a.bypassReverb == bypassReverb &&
+      a.bypassTremolo == bypassTremolo &&
+      a.bypassDelay == bypassDelay
     );
   }
 };
@@ -134,6 +153,13 @@ enum TremDelMakeUpGain {
   TV_MAKEUP_GAIN_HEAVY,
 };
 
+enum TremoloMode {
+  TREMOLO_SINE,        // Sine wave tremolo (LEFT)
+  TREMOLO_HARMONIC,    // Harmonic tremolo (MIDDLE)
+  TREMOLO_SQUARE,      // Square wave tremolo (UP)
+};
+
+
 constexpr ReverbKnobMode kReverbKnobMap[] = {
   REVERB_KNOB_ALL_WET,                        // UP
   REVERB_KNOB_DRY_WET_MIX,                    // MIDDLE
@@ -146,10 +172,10 @@ constexpr TremDelMakeUpGain kMakeupGainMap[] = {
   TV_MAKEUP_GAIN_NONE,                        // DOWN
 };
 
-constexpr int kWaveformMap[] = {
-    FlickOscillator::WAVE_SQUARE_ROUNDED,     // UP
-    FlickOscillator::WAVE_TRI,                // MIDDLE
-    FlickOscillator::WAVE_SIN,                // DOWN
+constexpr TremoloMode kTremoloModeMap[] = {
+    TREMOLO_SQUARE,     // RIGHT
+    TREMOLO_HARMONIC,   // MIDDLE
+    TREMOLO_SINE,       // LEFT
 };
 
 Delay delayL;
@@ -165,6 +191,12 @@ Led led_left, led_right;
 bool bypass_verb = true;
 bool bypass_trem = true;
 bool bypass_delay = true;
+
+// Harmonic tremolo state
+using daisysp::Svf;
+Svf harmonicFilterL;  // State variable filter for crossover
+Svf harmonicFilterR;
+constexpr float HARMONIC_TREMOLO_CROSSOVER_FREQ = 800.0f;  // Hz
 
 // Reverb vars
 bool plateDiffusionEnabled = true;
@@ -274,6 +306,10 @@ void load_settings() {
   mono_stereo_mode = static_cast<MonoStereoMode>(LocalSettings.monoStereoMode);
   update_reverb_scales(mono_stereo_mode);
 
+  bypass_verb = LocalSettings.bypassReverb;
+  bypass_trem = LocalSettings.bypassTremolo;
+  bypass_delay = LocalSettings.bypassDelay;
+
   verb.setPreDelay(platePreDelay);
   verb.setInputFilterHighCutoffPitch(plateInputDampHigh);
   verb.setDecay(plateDecay);
@@ -305,6 +341,16 @@ void save_mono_stereo_settings() {
   Settings &LocalSettings = SavedSettings.GetSettings();
 
   LocalSettings.monoStereoMode = mono_stereo_mode;
+
+  trigger_settings_save = true;
+}
+
+void saveBypassStates() {
+  Settings &localSettings = SavedSettings.GetSettings();
+
+  localSettings.bypassReverb = bypass_verb;
+  localSettings.bypassTremolo = bypass_trem;
+  localSettings.bypassDelay = bypass_delay;
 
   trigger_settings_save = true;
 }
@@ -376,6 +422,8 @@ void handle_normal_press(Funbox::Switches footswitch) {
       bypass_delay = !bypass_delay;
     }
   }
+
+  saveBypassStates();
 }
 
 void handle_double_press(Funbox::Switches footswitch) {
@@ -395,6 +443,8 @@ void handle_double_press(Funbox::Switches footswitch) {
   } else if (footswitch == Funbox::FOOTSWITCH_2) {
     // Toggle the trem bypass
     bypass_trem = !bypass_trem;
+
+    saveBypassStates();
   }
 }
 
@@ -465,7 +515,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
         // If just delay is on, show full-strength LED
         // If just trem is on, show 40% pulsing LED
         // If both are on, show 100% pulsing LED
-        led_right.Set(bypass_trem ? bypass_delay ? 0.0f : 1.0 : bypass_delay ? trem_val * 0.4 : trem_val);
+        led_right.Set(bypass_trem ? bypass_delay ? 0.0f : 1.0 : bypass_delay ? trem_val * TREMOLO_LED_BRIGHTNESS : trem_val);
       }
     }
   }
@@ -484,7 +534,15 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
     osc.SetAmp(depth);
     dc_os = 1.f - depth;
 
-    osc.SetWaveform(kWaveformMap[hw.GetToggleswitchPosition(Funbox::TOGGLESWITCH_2)]);
+    // Get tremolo mode from SWITCH_2
+    TremoloMode tremMode = kTremoloModeMap[hw.GetToggleswitchPosition(Funbox::TOGGLESWITCH_2)];
+
+    if (tremMode == TREMOLO_SQUARE) {
+      osc.SetWaveform(FlickOscillator::WAVE_SQUARE_ROUNDED);
+    } else {
+      // Everything else uses sine wave (harmonic trem doesn't care about waveform)
+      osc.SetWaveform(FlickOscillator::WAVE_SIN);
+    }
 
     //
     // Delay
@@ -587,13 +645,43 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
     }
 
     if (!bypass_trem) {
+      // Get tremolo mode from SWITCH_2 (in normal mode)
+      TremoloMode tremMode = TREMOLO_SINE;
+      if (pedal_mode == PEDAL_MODE_NORMAL) {
+        tremMode = kTremoloModeMap[hw.GetToggleswitchPosition(Funbox::TOGGLESWITCH_2)];
+      }
       // trem_val gets used above for pulsing LED
-      trem_val = dc_os + osc.Process();
+      float lfoSample = osc.Process();
+      trem_val = dc_os + lfoSample;
       float trem_make_up_gain = makeup_gain == TV_MAKEUP_GAIN_NONE ? 1.0f : makeup_gain == TV_MAKEUP_GAIN_NORMAL ? 1.2f : 1.6f;
 
-      s_L = s_L * trem_val * trem_make_up_gain;
-      s_R = s_R * trem_val * trem_make_up_gain;
+      // Apply tremolo based on mode
+      if (tremMode == TREMOLO_HARMONIC) {
+        // Process left channel
+        harmonicFilterL.Process(s_L);
+        float lowL = harmonicFilterL.Low();
+        float highL = harmonicFilterL.High();
+
+        // Apply tremolo with oposite phase to each band
+        float lowModL = lowL * (1.0f + lfoSample);
+        float highModL = highL * (1.0f - lfoSample); // inverted phase
+        s_L = (lowModL + highModL) * trem_make_up_gain;
+
+        // Process right channel
+        harmonicFilterR.Process(s_R);
+        float lowR = harmonicFilterR.Low();
+        float highR = harmonicFilterR.High();
+
+        float lowModR = lowR * (1.0f + lfoSample);
+        float highModR = highR * (1.0f - lfoSample); // inverted phase
+        s_R = (lowModR + highModR) * trem_make_up_gain;
+      } else {
+        // Standard tremolo (sine or square)
+        s_L = s_L * trem_val * trem_make_up_gain;
+        s_R = s_R * trem_val * trem_make_up_gain;
+      }
     }
+
     // Keep sending input to the reverb even if bypassed so that when it's
     // enabled again it will already have the current input signal already
     // being processed.
@@ -650,10 +738,10 @@ int main() {
 
   p_verb_amt.Init(hw.knobs[Funbox::KNOB_1], 0.0f, 1.0f, Parameter::LINEAR);
 
-  p_trem_speed.Init(hw.knobs[Funbox::KNOB_2], 0.2f, 16.0f, Parameter::LINEAR);
-  p_trem_depth.Init(hw.knobs[Funbox::KNOB_3], 0.0f, 1.0f, Parameter::LINEAR);
+  p_trem_speed.Init(hw.knobs[Funbox::KNOB_2], TREMOLO_SPEED_MIN, TREMOLO_SPEED_MAX, Parameter::LINEAR);
+  p_trem_depth.Init(hw.knobs[Funbox::KNOB_3], 0.0f, TREMOLO_DEPTH_SCALE, Parameter::LINEAR);
 
-  p_delay_time.Init(hw.knobs[Funbox::KNOB_4], hw.AudioSampleRate() * 0.05f, MAX_DELAY, Parameter::LOGARITHMIC);
+  p_delay_time.Init(hw.knobs[Funbox::KNOB_4], hw.AudioSampleRate() * DELAY_TIME_MIN_SECONDS, MAX_DELAY, Parameter::LOGARITHMIC);
   p_delay_feedback.Init(hw.knobs[Funbox::KNOB_5], 0.0f, 1.0f, Parameter::LINEAR);
   p_delay_amt.Init(hw.knobs[Funbox::KNOB_6], 0.0f, 100.0f, Parameter::LINEAR);
 
@@ -663,6 +751,15 @@ int main() {
   delayR.del = &delMemR;
 
   osc.Init(hw.AudioSampleRate());
+
+  // Initialize harmonic tremolo filters (state variable filters for crossover)
+  harmonicFilterL.Init(hw.AudioSampleRate());
+  harmonicFilterL.SetFreq(HARMONIC_TREMOLO_CROSSOVER_FREQ);
+  harmonicFilterL.SetRes(0.707f); // Q = 1/sqrt(2)
+
+  harmonicFilterR.Init(hw.AudioSampleRate());
+  harmonicFilterR.SetFreq(HARMONIC_TREMOLO_CROSSOVER_FREQ);
+  harmonicFilterR.SetRes(0.707f); // Q = 1/sqrt(2)
 
   //
   // Dattorro Reverb Initialization
@@ -692,7 +789,11 @@ int main() {
     plateTankModSpeed,
     plateTankModDepth,
     plateTankModShape,
-    platePreDelay
+    platePreDelay,
+    MS_MODE_MIMO, // monoStereoMode
+    true,         // bypassReverb
+    true,         // bypassTremolo
+    true,         // bypassDelay
   };
   SavedSettings.Init(defaultSettings);
 
