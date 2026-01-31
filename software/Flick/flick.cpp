@@ -108,7 +108,7 @@ struct Settings {
 PersistentStorage<Settings> SavedSettings(hw.seed.qspi);
 
 FlickOscillator osc;
-float dc_os = 0;
+float dcOffset = 0;
 
 DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS delMemL;
 DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS delMemR;
@@ -148,28 +148,28 @@ enum ReverbKnobMode {
 };
 
 enum TremDelMakeUpGain {
-  TV_MAKEUP_GAIN_NONE,
-  TV_MAKEUP_GAIN_NORMAL,
-  TV_MAKEUP_GAIN_HEAVY,
+  MAKEUP_GAIN_NONE,
+  MAKEUP_GAIN_NORMAL,
+  MAKEUP_GAIN_HEAVY,
 };
 
 enum TremoloMode {
   TREMOLO_SINE,        // Sine wave tremolo (LEFT)
   TREMOLO_HARMONIC,    // Harmonic tremolo (MIDDLE)
-  TREMOLO_SQUARE,      // Square wave tremolo (UP)
+  TREMOLO_SQUARE,      // Opto/Square wave tremolo (RIGHT)
 };
 
 
 constexpr ReverbKnobMode kReverbKnobMap[] = {
-  REVERB_KNOB_ALL_WET,                        // UP
+  REVERB_KNOB_ALL_WET,                        // RIGHT
   REVERB_KNOB_DRY_WET_MIX,                    // MIDDLE
-  REVERB_KNOB_ALL_DRY,                        // DOWN
+  REVERB_KNOB_ALL_DRY,                        // LEFT
 };
 
 constexpr TremDelMakeUpGain kMakeupGainMap[] = {
-  TV_MAKEUP_GAIN_HEAVY,                       // UP
-  TV_MAKEUP_GAIN_NORMAL,                      // MIDDLE
-  TV_MAKEUP_GAIN_NONE,                        // DOWN
+  MAKEUP_GAIN_HEAVY,                       // RIGHT
+  MAKEUP_GAIN_NORMAL,                      // MIDDLE
+  MAKEUP_GAIN_NONE,                        // LEFT
 };
 
 constexpr TremoloMode kTremoloModeMap[] = {
@@ -196,7 +196,7 @@ bool bypass_delay = true;
 using daisysp::Svf;
 Svf harmonicFilterL;  // State variable filter for crossover
 Svf harmonicFilterR;
-constexpr float HARMONIC_TREMOLO_CROSSOVER_FREQ = 800.0f;  // Hz
+constexpr float HARMONIC_TREMOLO_CROSSOVER_FREQ = 700.0f;  // Hz
 
 // Reverb vars
 bool plateDiffusionEnabled = true;
@@ -530,12 +530,16 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
     osc.SetFreq(p_trem_speed.Process());
     static float depth = 0;
     depth = daisysp::fclamp(p_trem_depth.Process(), 0.f, 1.f);
-    depth *= 0.5f;
-    osc.SetAmp(depth);
-    dc_os = 1.f - depth;
 
     // Get tremolo mode from SWITCH_2
     TremoloMode tremMode = kTremoloModeMap[hw.GetToggleswitchPosition(Funbox::TOGGLESWITCH_2)];
+    if (tremMode == TREMOLO_HARMONIC) {
+      // Harmonic tremolo requires different depth scale to keep it similar to
+      // the other modes.
+      depth *= 0.75f;
+    } else {
+      depth *= 0.5f;
+    }
 
     if (tremMode == TREMOLO_SQUARE) {
       osc.SetWaveform(FlickOscillator::WAVE_SQUARE_ROUNDED);
@@ -543,6 +547,8 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
       // Everything else uses sine wave (harmonic trem doesn't care about waveform)
       osc.SetWaveform(FlickOscillator::WAVE_SIN);
     }
+    osc.SetAmp(depth);
+    dcOffset = 1.f - depth;
 
     //
     // Delay
@@ -637,7 +643,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
       mixL += sigL;
       mixR += sigR;
 
-      float delay_make_up_gain = makeup_gain == TV_MAKEUP_GAIN_NONE ? 1.0f : makeup_gain == TV_MAKEUP_GAIN_NORMAL ? 1.66f : 2.0f;
+      float delay_make_up_gain = makeup_gain == MAKEUP_GAIN_NONE ? 1.0f : makeup_gain == MAKEUP_GAIN_NORMAL ? 1.66f : 2.0f;
 
       // apply drywet and attenuate
       s_L = fdrywet * mixL * 0.333f + (1.0f - fdrywet) * s_L * delay_make_up_gain;
@@ -652,12 +658,17 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
       }
       // trem_val gets used above for pulsing LED
       float lfoSample = osc.Process();
-      trem_val = dc_os + lfoSample;
-      float trem_make_up_gain = makeup_gain == TV_MAKEUP_GAIN_NONE ? 1.0f : makeup_gain == TV_MAKEUP_GAIN_NORMAL ? 1.2f : 1.6f;
+      trem_val = dcOffset + lfoSample;
+      float trem_make_up_gain = makeup_gain == MAKEUP_GAIN_NONE ? 1.0f : makeup_gain == MAKEUP_GAIN_NORMAL ? 1.2f : 1.6f;
 
       // Apply tremolo based on mode
       if (tremMode == TREMOLO_HARMONIC) {
+        // Modulate crossover frequency for subtle pitch modulation effect
+        float mod_freq = HARMONIC_TREMOLO_CROSSOVER_FREQ + lfoSample * 50.0f;
+        mod_freq = fmaxf(200.0f, fminf(2000.0f, mod_freq)); // clamp to reasonable range
+
         // Process left channel
+        harmonicFilterL.SetFreq(mod_freq);
         harmonicFilterL.Process(s_L);
         float lowL = harmonicFilterL.Low();
         float highL = harmonicFilterL.High();
@@ -668,6 +679,7 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
         s_L = (lowModL + highModL) * trem_make_up_gain;
 
         // Process right channel
+        harmonicFilterR.SetFreq(mod_freq);
         harmonicFilterR.Process(s_R);
         float lowR = harmonicFilterR.Low();
         float highR = harmonicFilterR.High();
@@ -755,11 +767,16 @@ int main() {
   // Initialize harmonic tremolo filters (state variable filters for crossover)
   harmonicFilterL.Init(hw.AudioSampleRate());
   harmonicFilterL.SetFreq(HARMONIC_TREMOLO_CROSSOVER_FREQ);
-  harmonicFilterL.SetRes(0.707f); // Q = 1/sqrt(2)
+  // harmonicFilterL.SetRes(0.707f); // Q = 1/sqrt(2) for stable crossover
+  harmonicFilterL.SetRes(0.2f);
+  // harmonicFilterL.SetDrive(2.5f);
 
   harmonicFilterR.Init(hw.AudioSampleRate());
   harmonicFilterR.SetFreq(HARMONIC_TREMOLO_CROSSOVER_FREQ);
-  harmonicFilterR.SetRes(0.707f); // Q = 1/sqrt(2)
+  // harmonicFilterR.SetRes(0.707f); // Q = 1/sqrt(2) for stable crossover
+  harmonicFilterR.SetRes(0.2f);
+
+  // harmonicFilterR.SetDrive(2.5f);
 
   //
   // Dattorro Reverb Initialization
