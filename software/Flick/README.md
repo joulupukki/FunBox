@@ -14,11 +14,9 @@ This is a reverb, tremolo, and delay pedal. The original goal of this pedal was 
 
 ### Demo
 
-TODO: Need to update this with Funbox hardware.
+Feature demo video (28 June 2025):
 
-OLD Hothouse-based demo video (6 January 2025):
-
-[![Demo Video](https://img.youtube.com/vi/RR4Hccq0VbE/0.jpg)](https://www.youtube.com/watch?v=RR4Hccq0VbE)
+[![Demo Video](https://img.youtube.com/vi/pWW68mqj2iQ/0.jpg)](https://www.youtube.com/watch?v=pWW68mqj2iQ)
 
 ### Controls (Normal Mode)
 
