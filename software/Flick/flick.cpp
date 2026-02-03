@@ -1,5 +1,5 @@
 // Flick for Funbox DIY DSP Platform
-// Copyright (C) 2025 Boyd Timothy <btimothy@gmail.com>
+// Copyright (C) 2025-2026 Boyd Timothy <btimothy@gmail.com>
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -19,6 +19,7 @@
 #include "daisy.h"
 #include "daisysp.h"
 #include "flick_oscillator.h"
+#include "flick_filters.hpp"
 #include "funbox_gpl.h"
 #include "Dattorro.hpp"
 #include <math.h>
@@ -54,6 +55,27 @@ constexpr float TREMOLO_LED_BRIGHTNESS = 0.4f; // LED brightness when only tremo
 constexpr float DELAY_TIME_MIN_SECONDS = 0.05f;
 constexpr float DELAY_WET_MIX_ATTENUATION = 0.333f; // Attenuation for wet delay signal
 constexpr float DELAY_DRY_WET_PERCENT_MAX = 100.0f; // Max value for dry/wet percentage
+
+// Filter Frequency constants
+constexpr float NOTCH_1_FREQ = 6020.0f; // FunBox is giving a weird resonance here
+constexpr float NOTCH_2_FREQ = 12278.0f; // FunBox is giving a weird resonance here
+
+// Harmonic tremolo state (filter cutoffs taken from Fender 6G12-A schematic)
+constexpr float HARMONIC_TREMOLO_LPF_CUTOFF = 144.0f; // 220K and 5nF LPF
+constexpr float HARMONIC_TREMOLO_HPF_CUTOFF = 636.0f; // 1M and 250pF HPF
+
+// EQ-Shaping EQ Filters for Harmonic Tremolo
+constexpr float HARMONIC_TREM_EQ_HPF1_CUTOFF = 63.0f;
+constexpr float HARMONIC_TREM_EQ_LPF1_CUTOFF = 11200.0f;
+constexpr float HARMONIC_TREM_EQ_PEAK1_FREQ = 7500.0f;
+constexpr float HARMONIC_TREM_EQ_PEAK1_GAIN = -3.37f; // in dB
+constexpr float HARMONIC_TREM_EQ_PEAK1_Q = 0.263f;
+constexpr float HARMONIC_TREM_EQ_PEAK2_FREQ = 254.0f;
+constexpr float HARMONIC_TREM_EQ_PEAK2_GAIN = 2.0f; // in dBz
+constexpr float HARMONIC_TREM_EQ_PEAK2_Q = 0.707f;
+constexpr float HARMONIC_TREM_EQ_LOW_SHELF_FREQ = 37.0f;
+constexpr float HARMONIC_TREM_EQ_LOW_SHELF_GAIN = -10.5f; // in dB
+constexpr float HARMONIC_TREM_EQ_LOW_SHELF_Q = 1.0f; // Shelf slope
 
 enum PedalMode {
   PEDAL_MODE_NORMAL,
@@ -192,131 +214,29 @@ bool bypass_verb = true;
 bool bypass_trem = true;
 bool bypass_delay = true;
 
-// Harmonic tremolo state (filter cutoffs taken from Fender 6G12-A schematic)
-constexpr float HARMONIC_TREMOLO_LPF_CUTOFF = 144.0f; // 220K and 5nF LPF
-constexpr float HARMONIC_TREMOLO_HPF_CUTOFF = 636.0f; // 1M and 250pF HPF
+// Main Harmonic Tremolo Filters
+LowPassFilter harmonic_trem_lpf_L;
+LowPassFilter harmonic_trem_lpf_R;
+HighPassFilter harmonic_trem_hpf_L;
+HighPassFilter harmonic_trem_hpf_R;
 
-struct LowPassFilter {
-    float alpha;
-    float prev_y = 0.0f;
+// EQ Shaping Filters for Harmonic Tremolo
+HighPassFilter harmonic_trem_eq_hpf1_L;
+HighPassFilter harmonic_trem_eq_hpf1_R;
+LowPassFilter harmonic_trem_eq_lpf1_L;
+LowPassFilter harmonic_trem_eq_lpf1_R;
+PeakingEQ harmonic_trem_eq_peak1_L;
+PeakingEQ harmonic_trem_eq_peak1_R;
+PeakingEQ harmonic_trem_eq_peak2_L;
+PeakingEQ harmonic_trem_eq_peak2_R;
+LowShelf harmonic_trem_eq_low_shelf_L;
+LowShelf harmonic_trem_eq_low_shelf_R;
 
-    void Init(float fc, float fs) {
-        alpha = expf(-2.0f * M_PI * fc / fs);
-    }
-
-    float Process(float x) {
-        float y = (1.0f - alpha) * x + alpha * prev_y;
-        prev_y = y;
-        return y;
-    }
-};
-
-struct HighPassFilter {
-    float alpha;
-    float prev_x = 0.0f;
-    float prev_y = 0.0f;
-
-    void Init(float fc, float fs) {
-        alpha = expf(-2.0f * M_PI * fc / fs);
-    }
-
-    float Process(float x) {
-        float y = (1.0f + alpha) * 0.5f * (x - prev_x) + alpha * prev_y;
-        prev_x = x;
-        prev_y = y;
-        return y;
-    }
-};
-
-struct PeakingEQ {
-    float b0, b1, b2, a1, a2;
-    float x1 = 0.0f, x2 = 0.0f, y1 = 0.0f, y2 = 0.0f;
-
-    void Init(float f0, float gain_db, float Q, float fs) {
-        float A = powf(10.0f, gain_db / 40.0f);
-        float omega = 2.0f * M_PI * f0 / fs;
-        float alpha = sinf(omega) / (2.0f * Q);
-        float cos_omega = cosf(omega);
-
-        b0 = 1.0f + alpha * A;
-        b1 = -2.0f * cos_omega;
-        b2 = 1.0f - alpha * A;
-        float a0 = 1.0f + alpha / A;
-        a1 = -2.0f * cos_omega;
-        a2 = 1.0f - alpha / A;
-
-        // Normalize by a0
-        b0 /= a0;
-        b1 /= a0;
-        b2 /= a0;
-        a1 /= a0;
-        a2 /= a0;
-    }
-
-    float Process(float x) {
-        float y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-        x2 = x1;
-        x1 = x;
-        y2 = y1;
-        y1 = y;
-        return y;
-    }
-};
-
-struct LowShelf {
-    float b0, b1, b2, a1, a2;
-    float x1 = 0.0f, x2 = 0.0f, y1 = 0.0f, y2 = 0.0f;
-
-    void Init(float f0, float gain_db, float Q, float fs) {
-        float A = powf(10.0f, gain_db / 40.0f);
-        float omega = 2.0f * M_PI * f0 / fs;
-        float alpha = sinf(omega) / (2.0f * Q);
-        float cos_omega = cosf(omega);
-        float sqrt_A = sqrtf(A);
-
-        b0 = A * ((A + 1.0f) - (A - 1.0f) * cos_omega + 2.0f * sqrt_A * alpha);
-        b1 = 2.0f * A * ((A - 1.0f) - (A + 1.0f) * cos_omega);
-        b2 = A * ((A + 1.0f) - (A - 1.0f) * cos_omega - 2.0f * sqrt_A * alpha);
-        float a0 = (A + 1.0f) + (A - 1.0f) * cos_omega + 2.0f * sqrt_A * alpha;
-        a1 = -2.0f * ((A - 1.0f) + (A + 1.0f) * cos_omega);
-        a2 = (A + 1.0f) + (A - 1.0f) * cos_omega - 2.0f * sqrt_A * alpha;
-
-        // Normalize by a0
-        b0 /= a0;
-        b1 /= a0;
-        b2 /= a0;
-        a1 /= a0;
-        a2 /= a0;
-    }
-
-    float Process(float x) {
-        float y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-        x2 = x1;
-        x1 = x;
-        y2 = y1;
-        y1 = y;
-        return y;
-    }
-};
-
-LowPassFilter lowPassL;
-LowPassFilter lowPassR;
-HighPassFilter highPassL;
-HighPassFilter highPassR;
-HighPassFilter harmonicHPF_L;
-HighPassFilter harmonicHPF_R;
-LowPassFilter harmonicLPF_L;
-LowPassFilter harmonicLPF_R;
-PeakingEQ harmonicEQ_L;
-PeakingEQ harmonicEQ_R;
-PeakingEQ harmonicEQ_Low_L;
-PeakingEQ harmonicEQ_Low_R;
-LowShelf harmonicLowShelf_L;
-LowShelf harmonicLowShelf_R;
-PeakingEQ notch6020_L;
-PeakingEQ notch6020_R;
-PeakingEQ notch12278_L;
-PeakingEQ notch12278_R;
+// General Notch Filters to remove FunBox resonant frequencies
+PeakingEQ notch1_L;
+PeakingEQ notch1_R;
+PeakingEQ notch2_L;
+PeakingEQ notch2_R;
 
 // Reverb vars
 bool plate_diffusion_enabled = true;
@@ -750,6 +670,12 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
       s_R = dry_R;
     }
 
+    // Apply notch filters for resonant frequencies
+    s_L = notch1_L.Process(s_L);
+    s_R = notch1_R.Process(s_R);
+    s_L = notch2_L.Process(s_L);
+    s_R = notch2_R.Process(s_R);
+
     if (!bypass_delay) {
       float mixL = 0;
       float mixR = 0;
@@ -781,17 +707,9 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
 
       // Apply tremolo based on mode
       if (tremMode == TREMOLO_HARMONIC) {
-        // Apply additional high pass filter at 63Hz
-        s_L = harmonicHPF_L.Process(s_L);
-        s_R = harmonicHPF_R.Process(s_R);
-
-        // Apply low pass filter at 11200Hz
-        s_L = harmonicLPF_L.Process(s_L);
-        s_R = harmonicLPF_R.Process(s_R);
-
         // Process left channel
-        float lowL = lowPassL.Process(s_L);
-        float highL = highPassL.Process(s_L);  // 90° phase difference
+        float lowL = harmonic_trem_lpf_L.Process(s_L);
+        float highL = harmonic_trem_hpf_L.Process(s_L);  // 90° phase difference
 
         // Apply tremolo with opposite phase to each band
         float lowModL = lowL * (1.0f + lfoSample);
@@ -799,36 +717,42 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
         s_L = (lowModL + highModL) * trem_make_up_gain;
 
         // Process right channel
-        float lowR = lowPassR.Process(s_R);
-        float highR = highPassR.Process(s_R);  // 90° phase difference
+        float lowR = harmonic_trem_lpf_R.Process(s_R);
+        float highR = harmonic_trem_hpf_R.Process(s_R);  // 90° phase difference
 
         float lowModR = lowR * (1.0f + lfoSample);
         float highModR = highR * (1.0f - lfoSample);
         s_R = (lowModR + highModR) * trem_make_up_gain;
 
+        //
+        // Add additional EQ filtering to get a better sound out of the
+        // harmonic tremolo.
+
+        // Apply additional high pass filter at 63Hz
+        s_L = harmonic_trem_eq_hpf1_L.Process(s_L);
+        s_R = harmonic_trem_eq_hpf1_R.Process(s_R);
+
+        // Apply low pass filter at 11200Hz
+        s_L = harmonic_trem_eq_lpf1_L.Process(s_L);
+        s_R = harmonic_trem_eq_lpf1_R.Process(s_R);
+
         // Apply low shelf cut at 37 Hz
-        s_L = harmonicLowShelf_L.Process(s_L);
-        s_R = harmonicLowShelf_R.Process(s_R);
+        s_L = harmonic_trem_eq_low_shelf_L.Process(s_L);
+        s_R = harmonic_trem_eq_low_shelf_R.Process(s_R);
 
         // Apply peaking EQ boost at 254 Hz
-        s_L = harmonicEQ_Low_L.Process(s_L);
-        s_R = harmonicEQ_Low_R.Process(s_R);
+        s_L = harmonic_trem_eq_peak2_L.Process(s_L);
+        s_R = harmonic_trem_eq_peak2_R.Process(s_R);
 
         // Apply peaking EQ cut at 7500 Hz
-        s_L = harmonicEQ_L.Process(s_L);
-        s_R = harmonicEQ_R.Process(s_R);
+        s_L = harmonic_trem_eq_peak1_L.Process(s_L);
+        s_R = harmonic_trem_eq_peak1_R.Process(s_R);
       } else {
         // Standard tremolo (sine or square)
         s_L = s_L * trem_val * trem_make_up_gain;
         s_R = s_R * trem_val * trem_make_up_gain;
       }
     }
-
-    // Apply notch filters for resonant frequencies
-    s_L = notch6020_L.Process(s_L);
-    s_R = notch6020_R.Process(s_R);
-    s_L = notch12278_L.Process(s_L);
-    s_R = notch12278_R.Process(s_R);
 
     // Keep sending input to the reverb even if bypassed so that when it's
     // enabled again it will already have the current input signal already
@@ -900,27 +824,28 @@ int main() {
 
   osc.Init(hw.AudioSampleRate());
 
+  // Initialize notch filters to remove resonant frequencies (always active)
+  notch1_L.Init(NOTCH_1_FREQ, -30.0f, 40.0f, hw.AudioSampleRate());
+  notch1_R.Init(NOTCH_1_FREQ, -30.0f, 40.0f, hw.AudioSampleRate());
+  notch2_L.Init(NOTCH_2_FREQ, -30.0f, 40.0f, hw.AudioSampleRate());
+  notch2_R.Init(NOTCH_2_FREQ, -30.0f, 40.0f, hw.AudioSampleRate());
+
   // Initialize harmonic tremolo filters
-  lowPassL.Init(HARMONIC_TREMOLO_LPF_CUTOFF, hw.AudioSampleRate());
-  lowPassR.Init(HARMONIC_TREMOLO_LPF_CUTOFF, hw.AudioSampleRate());
-  highPassL.Init(HARMONIC_TREMOLO_HPF_CUTOFF, hw.AudioSampleRate());
-  highPassR.Init(HARMONIC_TREMOLO_HPF_CUTOFF, hw.AudioSampleRate());
-  harmonicHPF_L.Init(63.0f, hw.AudioSampleRate());
-  harmonicHPF_R.Init(63.0f, hw.AudioSampleRate());
-  harmonicLPF_L.Init(11200.0f, hw.AudioSampleRate());
-  harmonicLPF_R.Init(11200.0f, hw.AudioSampleRate());
-  harmonicEQ_L.Init(7500.0f, -3.37f, 0.263f, hw.AudioSampleRate());
-  harmonicEQ_R.Init(7500.0f, -3.37f, 0.263f, hw.AudioSampleRate());
-  // harmonicEQ_Low_L.Init(254.0f, 2.0f, 0.884f, hw.AudioSampleRate());
-  // harmonicEQ_Low_R.Init(254.0f, 2.0f, 0.884f, hw.AudioSampleRate());
-  harmonicEQ_Low_L.Init(254.0f, 2.0f, 0.707f, hw.AudioSampleRate());
-  harmonicEQ_Low_R.Init(254.0f, 2.0f, 0.707f, hw.AudioSampleRate());
-  harmonicLowShelf_L.Init(37.0f, -10.5f, 1.0f, hw.AudioSampleRate());
-  harmonicLowShelf_R.Init(37.0f, -10.5f, 1.0f, hw.AudioSampleRate());
-  notch6020_L.Init(6020.0f, -30.0f, 40.0f, hw.AudioSampleRate());
-  notch6020_R.Init(6020.0f, -30.0f, 40.0f, hw.AudioSampleRate());
-  notch12278_L.Init(12278.0f, -30.0f, 40.0f, hw.AudioSampleRate());
-  notch12278_R.Init(12278.0f, -30.0f, 40.0f, hw.AudioSampleRate());
+  harmonic_trem_lpf_L.Init(HARMONIC_TREMOLO_LPF_CUTOFF, hw.AudioSampleRate());
+  harmonic_trem_lpf_R.Init(HARMONIC_TREMOLO_LPF_CUTOFF, hw.AudioSampleRate());
+  harmonic_trem_hpf_L.Init(HARMONIC_TREMOLO_HPF_CUTOFF, hw.AudioSampleRate());
+  harmonic_trem_hpf_R.Init(HARMONIC_TREMOLO_HPF_CUTOFF, hw.AudioSampleRate());
+
+  harmonic_trem_eq_hpf1_L.Init(HARMONIC_TREM_EQ_HPF1_CUTOFF, hw.AudioSampleRate());
+  harmonic_trem_eq_hpf1_R.Init(HARMONIC_TREM_EQ_HPF1_CUTOFF, hw.AudioSampleRate());
+  harmonic_trem_eq_lpf1_L.Init(HARMONIC_TREM_EQ_LPF1_CUTOFF, hw.AudioSampleRate());
+  harmonic_trem_eq_lpf1_R.Init(HARMONIC_TREM_EQ_LPF1_CUTOFF, hw.AudioSampleRate());
+  harmonic_trem_eq_peak1_L.Init(HARMONIC_TREM_EQ_PEAK1_FREQ, HARMONIC_TREM_EQ_PEAK1_GAIN, HARMONIC_TREM_EQ_PEAK1_Q, hw.AudioSampleRate());
+  harmonic_trem_eq_peak1_R.Init(HARMONIC_TREM_EQ_PEAK1_FREQ, HARMONIC_TREM_EQ_PEAK1_GAIN, HARMONIC_TREM_EQ_PEAK1_Q, hw.AudioSampleRate());
+  harmonic_trem_eq_peak2_L.Init(HARMONIC_TREM_EQ_PEAK2_FREQ, HARMONIC_TREM_EQ_PEAK2_GAIN, HARMONIC_TREM_EQ_PEAK2_Q, hw.AudioSampleRate());
+  harmonic_trem_eq_peak2_R.Init(HARMONIC_TREM_EQ_PEAK2_FREQ, HARMONIC_TREM_EQ_PEAK2_GAIN, HARMONIC_TREM_EQ_PEAK2_Q, hw.AudioSampleRate());
+  harmonic_trem_eq_low_shelf_L.Init(HARMONIC_TREM_EQ_LOW_SHELF_FREQ, HARMONIC_TREM_EQ_LOW_SHELF_GAIN, HARMONIC_TREM_EQ_LOW_SHELF_Q, hw.AudioSampleRate());
+  harmonic_trem_eq_low_shelf_R.Init(HARMONIC_TREM_EQ_LOW_SHELF_FREQ, HARMONIC_TREM_EQ_LOW_SHELF_GAIN, HARMONIC_TREM_EQ_LOW_SHELF_Q, hw.AudioSampleRate());
 
   //
   // Dattorro Reverb Initialization
