@@ -89,6 +89,13 @@ enum MonoStereoMode {                       // Controlled by Toggle Switch 3
   MS_MODE_SISO, // Stereo In, Stereo Out    // TOGGLESWITCH_RIGHT
 };
 
+enum ReverbType {
+  REVERB_PLATE,
+  REVERB_SPRING,
+  REVERB_HALL,
+  REVERB_DEFAULT = REVERB_PLATE  // For the 4th combination
+};
+
 // Persistent Settings
 struct Settings {
   int version; // Version of the settings struct
@@ -136,6 +143,7 @@ DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS delMemL;
 DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS delMemR;
 
 Dattorro verb(48000, 16, 4.0);
+ReverbType current_reverb_type = REVERB_PLATE;
 PedalMode pedal_mode = PEDAL_MODE_NORMAL;
 MonoStereoMode mono_stereo_mode = MS_MODE_MIMO;
 
@@ -517,6 +525,21 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
   static float trem_val;
   hw.ProcessAllControls();
 
+  // Read DIP switches to determine reverb type (runtime update)
+  {
+    bool dip1 = hw.switches[Funbox::DIP_SWITCH_1].RawState();
+    bool dip2 = hw.switches[Funbox::DIP_SWITCH_2].RawState();
+    if (!dip1 && !dip2) {
+      current_reverb_type = REVERB_PLATE;
+    } else if (!dip1 && dip2) {
+      current_reverb_type = REVERB_SPRING;
+    } else if (dip1 && !dip2) {
+      current_reverb_type = REVERB_HALL;
+    } else {
+      current_reverb_type = REVERB_PLATE; // Default for both on
+    }
+  }
+
   if (pedal_mode == PEDAL_MODE_EDIT_REVERB) {
     // Edit mode
 
@@ -761,10 +784,42 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
     left_input = hardLimit100_(s_L) * reverb_dry_scale_factor;
     right_input = hardLimit100_(s_R) * reverb_dry_scale_factor;
 
-    // reverb_dry_scale_factor = hardLimit100_(s_L) / left_input;
+    // // Set reverb parameters based on type /// PLACEHOLDER FOR NOW
+    // switch (current_reverb_type) {
+    //   case REVERB_PLATE:
+    //     verb.setDecay(plate_decay);
+    //     verb.setTankDiffusion(plate_tank_diffusion);
+    //     verb.setInputFilterHighCutoffPitch(plate_input_damp_high);
+    //     verb.setTankFilterHighCutFrequency(plate_tank_damp_high);
+    //     verb.setTankModSpeed(plate_tank_mod_speed * 8);
+    //     verb.setTankModDepth(plate_tank_mod_depth * 15);
+    //     verb.setTankModShape(plate_tank_mod_shape);
+    //     verb.setPreDelay(plate_pre_delay);
+    //     break;
+    //   case REVERB_SPRING:
+    //     verb.setDecay(0.3f); // Short decay for spring
+    //     verb.setTankDiffusion(0.9f); // High diffusion
+    //     verb.setInputFilterHighCutoffPitch(8000.0f); // Bright
+    //     verb.setTankFilterHighCutFrequency(10000.0f);
+    //     verb.setTankModSpeed(0.1f * 8); // Slow modulation
+    //     verb.setTankModDepth(0.1f * 15);
+    //     verb.setTankModShape(0.5f);
+    //     verb.setPreDelay(0.01f); // Short pre-delay
+    //     break;
+    //   case REVERB_HALL:
+    //     verb.setDecay(0.85f); // Long decay for hall
+    //     verb.setTankDiffusion(0.6f); // Medium diffusion
+    //     verb.setInputFilterHighCutoffPitch(12000.0f); // Very bright
+    //     verb.setTankFilterHighCutFrequency(15000.0f);
+    //     verb.setTankModSpeed(0.05f * 8); // Very slow
+    //     verb.setTankModDepth(0.05f * 15);
+    //     verb.setTankModShape(0.0f);
+    //     verb.setPreDelay(0.05f); // Longer pre-delay
+    //     break;
+    // }
 
-    verb.process(left_input * minus_18db_gain * minus_20db_gain * (1.0f + input_amplification * 7.0f) * clearPopCancelValue,
-                  right_input * minus_18db_gain * minus_20db_gain * (1.0f + input_amplification * 7.0f) * clearPopCancelValue);
+    float gain = minus_18db_gain * minus_20db_gain * (1.0f + input_amplification * 7.0f) * clearPopCancelValue;
+    verb.process(left_input * gain, right_input * gain);
 
     if (!bypass_verb) {
       // left_output = ((left_input * plate_dry * 0.1) + (verb.getLeftOutput() * plate_wet * clearPopCancelValue));
