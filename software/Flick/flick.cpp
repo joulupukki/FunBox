@@ -21,6 +21,8 @@
 #include "flick_oscillator.h"
 #include "flick_filters.hpp"
 #include "funbox_gpl.h"
+#include "hall_reverb.h"
+#include "spring_reverb.h"
 #include "Dattorro.hpp"
 #include <math.h>
 
@@ -143,6 +145,8 @@ DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS delMemL;
 DelayLine<float, MAX_DELAY> DSY_SDRAM_BSS delMemR;
 
 Dattorro verb(48000, 16, 4.0);
+flick::HallReverb hall_reverb;
+flick::SpringReverb spring_reverb;
 ReverbType current_reverb_type = REVERB_PLATE;
 PedalMode pedal_mode = PEDAL_MODE_NORMAL;
 MonoStereoMode mono_stereo_mode = MS_MODE_MIMO;
@@ -784,48 +788,39 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
     left_input = hardLimit100_(s_L) * reverb_dry_scale_factor;
     right_input = hardLimit100_(s_R) * reverb_dry_scale_factor;
 
-    // // Set reverb parameters based on type /// PLACEHOLDER FOR NOW
-    // switch (current_reverb_type) {
-    //   case REVERB_PLATE:
-    //     verb.setDecay(plate_decay);
-    //     verb.setTankDiffusion(plate_tank_diffusion);
-    //     verb.setInputFilterHighCutoffPitch(plate_input_damp_high);
-    //     verb.setTankFilterHighCutFrequency(plate_tank_damp_high);
-    //     verb.setTankModSpeed(plate_tank_mod_speed * 8);
-    //     verb.setTankModDepth(plate_tank_mod_depth * 15);
-    //     verb.setTankModShape(plate_tank_mod_shape);
-    //     verb.setPreDelay(plate_pre_delay);
-    //     break;
-    //   case REVERB_SPRING:
-    //     verb.setDecay(0.3f); // Short decay for spring
-    //     verb.setTankDiffusion(0.9f); // High diffusion
-    //     verb.setInputFilterHighCutoffPitch(8000.0f); // Bright
-    //     verb.setTankFilterHighCutFrequency(10000.0f);
-    //     verb.setTankModSpeed(0.1f * 8); // Slow modulation
-    //     verb.setTankModDepth(0.1f * 15);
-    //     verb.setTankModShape(0.5f);
-    //     verb.setPreDelay(0.01f); // Short pre-delay
-    //     break;
-    //   case REVERB_HALL:
-    //     verb.setDecay(0.85f); // Long decay for hall
-    //     verb.setTankDiffusion(0.6f); // Medium diffusion
-    //     verb.setInputFilterHighCutoffPitch(12000.0f); // Very bright
-    //     verb.setTankFilterHighCutFrequency(15000.0f);
-    //     verb.setTankModSpeed(0.05f * 8); // Very slow
-    //     verb.setTankModDepth(0.05f * 15);
-    //     verb.setTankModShape(0.0f);
-    //     verb.setPreDelay(0.05f); // Longer pre-delay
-    //     break;
-    // }
-
     float gain = minus_18db_gain * minus_20db_gain * (1.0f + input_amplification * 7.0f) * clearPopCancelValue;
-    verb.process(left_input * gain, right_input * gain);
+    float rev_l, rev_r;
+
+    switch (current_reverb_type) {
+      case REVERB_PLATE:
+        verb.setDecay(plate_decay);
+        verb.setTankDiffusion(plate_tank_diffusion);
+        verb.setInputFilterHighCutoffPitch(plate_input_damp_high);
+        verb.setTankFilterHighCutFrequency(plate_tank_damp_high);
+        verb.setTankModSpeed(plate_tank_mod_speed * 8);
+        verb.setTankModDepth(plate_tank_mod_depth * 15);
+        verb.setTankModShape(plate_tank_mod_shape);
+        verb.setPreDelay(plate_pre_delay);
+        verb.process(left_input * gain, right_input * gain);
+        rev_l = verb.getLeftOutput();
+        rev_r = verb.getRightOutput();
+        break;
+      case REVERB_SPRING:
+        spring_reverb.ProcessSample(left_input * gain, right_input * gain, &rev_l, &rev_r);
+        break;
+      case REVERB_HALL:
+        hall_reverb.ProcessSample(left_input * gain, right_input * gain, &rev_l, &rev_r);
+        // Make hall reverb louder to match the mix knob expectations
+        rev_l *= 4.0f;
+        rev_r *= 4.0f;
+        break;
+    }
 
     if (!bypass_verb) {
       // left_output = ((left_input * plate_dry * 0.1) + (verb.getLeftOutput() * plate_wet * clearPopCancelValue));
       // right_output = ((right_input * plate_dry * 0.1) + (verb.getRightOutput() * plate_wet * clearPopCancelValue));
-      left_output = ((left_input * plate_dry * reverb_reverse_scale_factor) + (verb.getLeftOutput() * plate_wet * clearPopCancelValue));
-      right_output = ((right_input * plate_dry * reverb_reverse_scale_factor) + (verb.getRightOutput() * plate_wet * clearPopCancelValue));
+      left_output = ((left_input * plate_dry * reverb_reverse_scale_factor) + (rev_l * plate_wet * clearPopCancelValue));
+      right_output = ((right_input * plate_dry * reverb_reverse_scale_factor) + (rev_r * plate_wet * clearPopCancelValue));
 
       s_L = left_output;
       s_R = right_output;
@@ -920,6 +915,16 @@ int main() {
   verb.enableInputDiffusion(plate_diffusion_enabled);
   verb.setInputFilterLowCutoffPitch(plate_input_damp_low);
   verb.setTankFilterLowCutFrequency(plate_tank_damp_low);
+
+  // Initialize Hall Reverb
+  hall_reverb.Init(hw.AudioSampleRate());
+  hall_reverb.SetFeedback(0.95f); // Higher feedback for longer hall decay
+
+  // Initialize Spring Reverb
+  spring_reverb.Init(hw.AudioSampleRate());
+  spring_reverb.SetDecay(0.7f); // Spring decay
+  spring_reverb.SetMix(1.0f);   // 100% wet - it'll be mixed with Knob 1
+  spring_reverb.SetDamping(7000.0f); // High-frequency damping
 
   Settings defaultSettings = {
     SETTINGS_VERSION, // version

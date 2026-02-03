@@ -5,7 +5,7 @@ TARGET = flick
 #USE_DAISYSP_LGPL=1
 
 # Sources and Hothouse header files
-CPP_SOURCES = flick.cpp flick_oscillator.cpp funbox_gpl.cpp
+CPP_SOURCES = flick.cpp flick_oscillator.cpp funbox_gpl.cpp hall_reverb.cpp spring_reverb.cpp
 
 # Add PlateauNEVersio sources
 CPP_SOURCES += PlateauNEVersio/utilities/Utilities.cpp
