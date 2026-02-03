@@ -228,10 +228,95 @@ struct HighPassFilter {
     }
 };
 
+struct PeakingEQ {
+    float b0, b1, b2, a1, a2;
+    float x1 = 0.0f, x2 = 0.0f, y1 = 0.0f, y2 = 0.0f;
+
+    void Init(float f0, float gain_db, float Q, float fs) {
+        float A = powf(10.0f, gain_db / 40.0f);
+        float omega = 2.0f * M_PI * f0 / fs;
+        float alpha = sinf(omega) / (2.0f * Q);
+        float cos_omega = cosf(omega);
+
+        b0 = 1.0f + alpha * A;
+        b1 = -2.0f * cos_omega;
+        b2 = 1.0f - alpha * A;
+        float a0 = 1.0f + alpha / A;
+        a1 = -2.0f * cos_omega;
+        a2 = 1.0f - alpha / A;
+
+        // Normalize by a0
+        b0 /= a0;
+        b1 /= a0;
+        b2 /= a0;
+        a1 /= a0;
+        a2 /= a0;
+    }
+
+    float Process(float x) {
+        float y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        x2 = x1;
+        x1 = x;
+        y2 = y1;
+        y1 = y;
+        return y;
+    }
+};
+
+struct LowShelf {
+    float b0, b1, b2, a1, a2;
+    float x1 = 0.0f, x2 = 0.0f, y1 = 0.0f, y2 = 0.0f;
+
+    void Init(float f0, float gain_db, float Q, float fs) {
+        float A = powf(10.0f, gain_db / 40.0f);
+        float omega = 2.0f * M_PI * f0 / fs;
+        float alpha = sinf(omega) / (2.0f * Q);
+        float cos_omega = cosf(omega);
+        float sqrt_A = sqrtf(A);
+
+        b0 = A * ((A + 1.0f) - (A - 1.0f) * cos_omega + 2.0f * sqrt_A * alpha);
+        b1 = 2.0f * A * ((A - 1.0f) - (A + 1.0f) * cos_omega);
+        b2 = A * ((A + 1.0f) - (A - 1.0f) * cos_omega - 2.0f * sqrt_A * alpha);
+        float a0 = (A + 1.0f) + (A - 1.0f) * cos_omega + 2.0f * sqrt_A * alpha;
+        a1 = -2.0f * ((A - 1.0f) + (A + 1.0f) * cos_omega);
+        a2 = (A + 1.0f) + (A - 1.0f) * cos_omega - 2.0f * sqrt_A * alpha;
+
+        // Normalize by a0
+        b0 /= a0;
+        b1 /= a0;
+        b2 /= a0;
+        a1 /= a0;
+        a2 /= a0;
+    }
+
+    float Process(float x) {
+        float y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        x2 = x1;
+        x1 = x;
+        y2 = y1;
+        y1 = y;
+        return y;
+    }
+};
+
 LowPassFilter lowPassL;
 LowPassFilter lowPassR;
 HighPassFilter highPassL;
 HighPassFilter highPassR;
+HighPassFilter harmonicHPF_L;
+HighPassFilter harmonicHPF_R;
+LowPassFilter harmonicLPF_L;
+LowPassFilter harmonicLPF_R;
+PeakingEQ harmonicEQ_L;
+PeakingEQ harmonicEQ_R;
+PeakingEQ harmonicEQ_Low_L;
+PeakingEQ harmonicEQ_Low_R;
+LowShelf harmonicLowShelf_L;
+LowShelf harmonicLowShelf_R;
+PeakingEQ notch6020_L;
+PeakingEQ notch6020_R;
+PeakingEQ notch12278_L;
+PeakingEQ notch12278_R;
 
 // Reverb vars
 bool plate_diffusion_enabled = true;
@@ -696,6 +781,14 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
 
       // Apply tremolo based on mode
       if (tremMode == TREMOLO_HARMONIC) {
+        // Apply additional high pass filter at 63Hz
+        s_L = harmonicHPF_L.Process(s_L);
+        s_R = harmonicHPF_R.Process(s_R);
+
+        // Apply low pass filter at 11200Hz
+        s_L = harmonicLPF_L.Process(s_L);
+        s_R = harmonicLPF_R.Process(s_R);
+
         // Process left channel
         float lowL = lowPassL.Process(s_L);
         float highL = highPassL.Process(s_L);  // 90° phase difference
@@ -712,12 +805,30 @@ void AudioCallback(AudioHandle::InputBuffer in, AudioHandle::OutputBuffer out,
         float lowModR = lowR * (1.0f + lfoSample);
         float highModR = highR * (1.0f - lfoSample);
         s_R = (lowModR + highModR) * trem_make_up_gain;
+
+        // Apply low shelf cut at 37 Hz
+        s_L = harmonicLowShelf_L.Process(s_L);
+        s_R = harmonicLowShelf_R.Process(s_R);
+
+        // Apply peaking EQ boost at 254 Hz
+        s_L = harmonicEQ_Low_L.Process(s_L);
+        s_R = harmonicEQ_Low_R.Process(s_R);
+
+        // Apply peaking EQ cut at 7500 Hz
+        s_L = harmonicEQ_L.Process(s_L);
+        s_R = harmonicEQ_R.Process(s_R);
       } else {
         // Standard tremolo (sine or square)
         s_L = s_L * trem_val * trem_make_up_gain;
         s_R = s_R * trem_val * trem_make_up_gain;
       }
     }
+
+    // Apply notch filters for resonant frequencies
+    s_L = notch6020_L.Process(s_L);
+    s_R = notch6020_R.Process(s_R);
+    s_L = notch12278_L.Process(s_L);
+    s_R = notch12278_R.Process(s_R);
 
     // Keep sending input to the reverb even if bypassed so that when it's
     // enabled again it will already have the current input signal already
@@ -794,6 +905,22 @@ int main() {
   lowPassR.Init(HARMONIC_TREMOLO_LPF_CUTOFF, hw.AudioSampleRate());
   highPassL.Init(HARMONIC_TREMOLO_HPF_CUTOFF, hw.AudioSampleRate());
   highPassR.Init(HARMONIC_TREMOLO_HPF_CUTOFF, hw.AudioSampleRate());
+  harmonicHPF_L.Init(63.0f, hw.AudioSampleRate());
+  harmonicHPF_R.Init(63.0f, hw.AudioSampleRate());
+  harmonicLPF_L.Init(11200.0f, hw.AudioSampleRate());
+  harmonicLPF_R.Init(11200.0f, hw.AudioSampleRate());
+  harmonicEQ_L.Init(7500.0f, -3.37f, 0.263f, hw.AudioSampleRate());
+  harmonicEQ_R.Init(7500.0f, -3.37f, 0.263f, hw.AudioSampleRate());
+  // harmonicEQ_Low_L.Init(254.0f, 2.0f, 0.884f, hw.AudioSampleRate());
+  // harmonicEQ_Low_R.Init(254.0f, 2.0f, 0.884f, hw.AudioSampleRate());
+  harmonicEQ_Low_L.Init(254.0f, 2.0f, 0.707f, hw.AudioSampleRate());
+  harmonicEQ_Low_R.Init(254.0f, 2.0f, 0.707f, hw.AudioSampleRate());
+  harmonicLowShelf_L.Init(37.0f, -10.5f, 1.0f, hw.AudioSampleRate());
+  harmonicLowShelf_R.Init(37.0f, -10.5f, 1.0f, hw.AudioSampleRate());
+  notch6020_L.Init(6020.0f, -30.0f, 40.0f, hw.AudioSampleRate());
+  notch6020_R.Init(6020.0f, -30.0f, 40.0f, hw.AudioSampleRate());
+  notch12278_L.Init(12278.0f, -30.0f, 40.0f, hw.AudioSampleRate());
+  notch12278_R.Init(12278.0f, -30.0f, 40.0f, hw.AudioSampleRate());
 
   //
   // Dattorro Reverb Initialization
